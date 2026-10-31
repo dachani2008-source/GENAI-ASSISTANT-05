@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-evergreen: #182C28;
+    --color-porcelain: #F5F0E8;
+    --color-burgundy: #A34E50;
+    --color-gold: #C59A52;
+    --color-jade: #315B50;
+    --color-stone: #D8C9B8;
+    --color-white: #FFFFFF;
+    --color-charcoal: #292A27;
+
+    --accent-wedding: #A34E50;
+    --accent-birthday: #D77C50;
+    --accent-community: #397D85;
+
+    --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-serif: 'Cormorant Garamond', Georgia, serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-porcelain);
+    color: var(--color-charcoal);
+    overflow-x: hidden;
+  }
+
+  h1, h2, .font-editorial {
+    font-family: var(--font-serif);
+    text-wrap: balance;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom subtle scrollbars for tables and drawers */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F5F0E8;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D8C9B8;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #182C28;
+}

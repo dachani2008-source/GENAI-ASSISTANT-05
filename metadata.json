@@ -1,0 +1,6 @@
+{
+  "name": "FESTIVA AI — The Intelligent Event Planning Studio",
+  "description": "Every detail, thoughtfully planned. Every moment, unforgettable. A GenAI-powered planning assistant for weddings, birthdays, and community events with deterministic budgets, timelines, vendor checklists, calendar sync, and tailored creative direction.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
