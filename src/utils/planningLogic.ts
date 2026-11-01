@@ -475,3 +475,149 @@ export function calculateInstantEstimate(
   };
 }
 
+/**
+ * Sanitizes untrusted user text input by stripping HTML/script tags,
+ * control characters, and enforcing a maximum character length.
+ */
+export function sanitizeTextInput(input: unknown, maxLength: number = 300): string {
+  if (typeof input !== 'string') return '';
+  return input
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<\/?[^>]+(>|$)/g, '')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .trim()
+    .slice(0, Math.max(1, maxLength));
+}
+
+/**
+ * Builds a direct Google Calendar event template URL for 1-click cloud calendar syncing.
+ */
+export function generateGoogleCalendarUrl(event: EventWorkspace): string {
+  const cleanDate = (dateStr: string) => dateStr.replace(/-/g, '');
+  const start = cleanDate(event.date || '2026-12-15');
+  const startMs = Date.parse(`${event.date}T00:00:00Z`);
+  const nextDay = !Number.isNaN(startMs)
+    ? new Date(startMs + 86400000).toISOString().slice(0, 10).replace(/-/g, '')
+    : start;
+
+  const topMilestones = event.milestones
+    .slice(0, 3)
+    .map((m) => `• ${m.title} (Due: ${m.dueDate})`)
+    .join('\n');
+
+  const details = [
+    `ELEGANTIA AI — ${event.category.toUpperCase()} STUDIO`,
+    `Theme: ${event.theme} | Style: ${event.style}`,
+    `Guests: ${event.guestCount} | Total Budget: ${formatCurrency(event.totalBudget, event.currency)}`,
+    topMilestones ? `\nKey Milestones:\n${topMilestones}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: event.name,
+    dates: `${start}/${nextDay}`,
+    details,
+    location: event.location,
+  });
+
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+export interface ThemePreferenceInput {
+  eventCategory: 'wedding' | 'birthday' | 'community';
+  season: string;
+  setting: string;
+  colorMood: string;
+  culturalNotes?: string;
+  vibe?: string;
+}
+
+export interface ThemeSuggestionItem {
+  id: string;
+  title: string;
+  tagline: string;
+  style: string;
+  description: string;
+  palette: string[];
+  decorHighlights: string[];
+  recommendedLighting: string;
+}
+
+/**
+ * Deterministic & preference-aware theme suggestion engine based on user preferences.
+ */
+export function suggestThemesFromPreferences(
+  prefs: ThemePreferenceInput
+): ThemeSuggestionItem[] {
+  const season = sanitizeTextInput(prefs.season || 'Autumn', 60) || 'Autumn';
+  const setting = sanitizeTextInput(prefs.setting || 'Architectural Courtyard', 80) || 'Architectural Courtyard';
+  const colorMood = sanitizeTextInput(prefs.colorMood || 'Evergreen, Burgundy & Antique Gold', 80);
+  const cultural = sanitizeTextInput(prefs.culturalNotes || '', 120);
+  const vibe = sanitizeTextInput(prefs.vibe || 'Contemporary Editorial', 80) || 'Contemporary Editorial';
+
+  const palettes: Record<string, string[]> = {
+    burgundy: ['#182C28', '#A34E50', '#C59A52', '#F5F0E8'],
+    coral: ['#182C28', '#D77C50', '#C59A52', '#F5F0E8'],
+    teal: ['#182C28', '#397D85', '#315B50', '#F5F0E8'],
+  };
+
+  const activePalette =
+    colorMood.toLowerCase().includes('coral') || prefs.eventCategory === 'birthday'
+      ? palettes.coral
+      : colorMood.toLowerCase().includes('teal') || prefs.eventCategory === 'community'
+      ? palettes.teal
+      : palettes.burgundy;
+
+  return [
+    {
+      id: `theme-pref-1`,
+      title: `${season} ${setting} Noir & Candlelight`,
+      tagline: `Tailored for ${vibe} celebrations`,
+      style: vibe,
+      description: `Combines ${colorMood.toLowerCase()} accents within a ${setting.toLowerCase()} setting${
+        cultural ? `, honoring ${cultural}` : ''
+      } with tactile linen drapery and sculptural floral vessels.`,
+      palette: activePalette,
+      decorHighlights: [
+        `Custom ${season.toLowerCase()} botanical installations in travertine urns`,
+        '2400K beeswax taper chandeliers along primary dining tables',
+        `600gsm cotton stationery suite with ${colorMood.split('&')[0].trim().toLowerCase()} accents`,
+      ],
+      recommendedLighting: '2400K Warm Candlelight & Pin-Spot Architectural Uplighting',
+    },
+    {
+      id: `theme-pref-2`,
+      title: `Botanical Conservatory & Sculptural Stone`,
+      tagline: `${season} indoor-outdoor sensory flow`,
+      style: `${vibe} Minimalist`,
+      description: `Designed for ${setting.toLowerCase()} venues, pairing raw limestone textures, organic foliage canopies, and curated acoustic transitions${
+        cultural ? ` with ${cultural} hospitality touches` : ''
+      }.`,
+      palette: ['#182C28', '#315B50', '#D8C9B8', '#F5F0E8'],
+      decorHighlights: [
+        'Low-profile Ikebana floral runners preserving cross-table conversation sightlines',
+        'Hand-thrown ceramic charger plates with brushed brass flatware',
+        'Interactive acoustic prelude and bespoke welcome pour station',
+      ],
+      recommendedLighting: 'Golden-Hour Diffused Wash & Glass Hurricane Lanterns',
+    },
+    {
+      id: `theme-pref-3`,
+      title: `Grand Heritage Salon & Velvet Atelier`,
+      tagline: `High-contrast ${season.toLowerCase()} evening drama`,
+      style: 'Editorial Heritage',
+      description: `Elevates ${setting.toLowerCase()} architecture through rich velvet lounge vignettes, heirloom silver service, and bespoke ${colorMood.toLowerCase()} color storytelling.`,
+      palette: ['#292A27', activePalette[1], '#C59A52', '#F5F0E8'],
+      decorHighlights: [
+        'Segmented velvet lounge banquettes framing the central gathering floor',
+        'Custom monogrammed menu cards with hand-torn deckled edges',
+        'Late-evening espresso, digestif, and artisanal patisserie cart',
+      ],
+      recommendedLighting: 'Chiaroscuro Gallery Spotlights & Amber Dimmer Cues',
+    },
+  ];
+}
+
+

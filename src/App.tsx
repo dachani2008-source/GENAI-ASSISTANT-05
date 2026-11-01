@@ -1,13 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bell,
   Calendar,
-  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Compass,
-  Download,
   FolderKanban,
   LayoutDashboard,
   Lightbulb,
@@ -37,17 +35,46 @@ import {
 } from './utils/planningLogic';
 import { EditorialVisual } from './components/EditorialVisuals';
 import { MarketingExperience } from './components/MarketingExperience';
-import { EventWizardModal } from './components/EventWizardModal';
-import { CategoryStudioView } from './components/CategoryStudioView';
-import { SmartBudgetStudio } from './components/SmartBudgetStudio';
-import { TimelineStudio } from './components/TimelineStudio';
-import { VendorStudio } from './components/VendorStudio';
-import { IdeaStudio } from './components/IdeaStudio';
-import { GuestAndCalendarView } from './components/GuestAndCalendarView';
-import { AICopilotPanel } from './components/AICopilotPanel';
+import { OverviewDashboard } from './components/OverviewDashboard';
+
+// Lazy-loaded workspace studios & modals for optimal bundle splitting and fast initial load
+const EventWizardModal = lazy(() =>
+  import('./components/EventWizardModal').then((m) => ({ default: m.EventWizardModal }))
+);
+const CategoryStudioView = lazy(() =>
+  import('./components/CategoryStudioView').then((m) => ({ default: m.CategoryStudioView }))
+);
+const SmartBudgetStudio = lazy(() =>
+  import('./components/SmartBudgetStudio').then((m) => ({ default: m.SmartBudgetStudio }))
+);
+const TimelineStudio = lazy(() =>
+  import('./components/TimelineStudio').then((m) => ({ default: m.TimelineStudio }))
+);
+const VendorStudio = lazy(() =>
+  import('./components/VendorStudio').then((m) => ({ default: m.VendorStudio }))
+);
+const IdeaStudio = lazy(() =>
+  import('./components/IdeaStudio').then((m) => ({ default: m.IdeaStudio }))
+);
+const GuestAndCalendarView = lazy(() =>
+  import('./components/GuestAndCalendarView').then((m) => ({ default: m.GuestAndCalendarView }))
+);
+const AICopilotPanel = lazy(() =>
+  import('./components/AICopilotPanel').then((m) => ({ default: m.AICopilotPanel }))
+);
 
 const EVENTS_STORAGE_KEY = 'elegantia_ai_events_v1';
 const PLANNER_NAME_KEY = 'elegantia_ai_planner_name_v1';
+
+const StudioLoadingFallback: React.FC = () => (
+  <div
+    role="status"
+    aria-live="polite"
+    className="bg-white rounded-lg border border-[#D8C9B8] p-8 text-center text-xs text-[#315B50] font-medium"
+  >
+    Loading ELEGANTIA AI studio module...
+  </div>
+);
 
 export default function App() {
   const [environment, setEnvironment] = useState<'marketing' | 'workspace'>(() => {
@@ -99,12 +126,16 @@ export default function App() {
   const [profileMenuOpen, setProfileMenuOpen] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Debounced localStorage persistence to prevent main-thread blocking on rapid edits
   useEffect(() => {
-    try {
-      localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(events));
-    } catch {
-      // ignore storage errors
-    }
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(events));
+      } catch {
+        // ignore storage errors
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [events]);
 
   useEffect(() => {
@@ -115,66 +146,90 @@ export default function App() {
     }
   }, [plannerName]);
 
+  // Global Escape key listener for accessible modal/drawer dismissal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setWizardOpen(false);
+        setCopilotDrawerOpen(false);
+        setMobileSidebarOpen(false);
+        setNotificationsOpen(false);
+        setProfileMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const activeEvent = useMemo(
     () => events.find((e) => e.id === activeEventId) || events[0],
     [events, activeEventId]
   );
 
-  const triggerToast = (msg: string) => {
+  const triggerToast = useCallback((msg: string) => {
     setToastMessage(msg);
     window.clearTimeout((window as unknown as { __toastTimer?: number }).__toastTimer);
     (window as unknown as { __toastTimer?: number }).__toastTimer = window.setTimeout(() => {
       setToastMessage(null);
     }, 4000);
-  };
+  }, []);
 
-  const handleUpdateActiveEvent = (updated: EventWorkspace) => {
+  const handleUpdateActiveEvent = useCallback((updated: EventWorkspace) => {
     setEvents((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
-  };
+  }, []);
 
-  const handleOpenWizard = (
-    cat?: EventCategory,
-    preset?: { budget?: number; guestCount?: number }
-  ) => {
-    setWizardCategory(cat || activeEvent.category || marketingCategory);
-    setWizardPreset(preset || null);
-    setWizardOpen(true);
-  };
+  const handleOpenWizard = useCallback(
+    (cat?: EventCategory, preset?: { budget?: number; guestCount?: number }) => {
+      setWizardCategory(cat || activeEvent.category || marketingCategory);
+      setWizardPreset(preset || null);
+      setWizardOpen(true);
+    },
+    [activeEvent.category, marketingCategory]
+  );
 
-  const handleEnterWorkspace = (cat?: EventCategory, section?: WorkspaceSection) => {
-    if (cat) {
-      const matchingEvent = events.find((e) => e.category === cat);
-      if (matchingEvent) {
-        setActiveEventId(matchingEvent.id);
+  const handleEnterWorkspace = useCallback(
+    (cat?: EventCategory, section?: WorkspaceSection) => {
+      if (cat) {
+        const matchingEvent = events.find((e) => e.category === cat);
+        if (matchingEvent) {
+          setActiveEventId(matchingEvent.id);
+        }
       }
-    }
-    if (section) {
-      setActiveSection(section);
-    }
-    setEnvironment('workspace');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+      if (section) {
+        setActiveSection(section);
+      }
+      setEnvironment('workspace');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [events]
+  );
 
-  const handleSwitchCategoryStudio = (cat: EventCategory) => {
-    const match = events.find((e) => e.category === cat);
-    if (match) {
-      setActiveEventId(match.id);
-      triggerToast(`Switched workspace to ${CATEGORY_SHOWCASE[cat].studioTitle}: ${match.name}`);
-    }
-  };
+  const handleSwitchCategoryStudio = useCallback(
+    (cat: EventCategory) => {
+      const match = events.find((e) => e.category === cat);
+      if (match) {
+        setActiveEventId(match.id);
+        triggerToast(`Switched workspace to ${CATEGORY_SHOWCASE[cat].studioTitle}: ${match.name}`);
+      }
+    },
+    [events, triggerToast]
+  );
 
-  const handleToggleMilestoneFromOverview = (milestoneId: string) => {
-    const nextMilestones = activeEvent.milestones.map((m) => {
-      if (m.id !== milestoneId) return m;
-      const nextStatus: MilestoneStatus =
-        m.status === 'Completed' ? 'Upcoming' : 'Completed';
-      return { ...m, status: nextStatus };
-    });
-    handleUpdateActiveEvent({ ...activeEvent, milestones: nextMilestones });
-    triggerToast('Updated milestone completion status.');
-  };
+  const handleToggleMilestoneFromOverview = useCallback(
+    (milestoneId: string) => {
+      const nextMilestones = activeEvent.milestones.map((m) => {
+        if (m.id !== milestoneId) return m;
+        const nextStatus: MilestoneStatus =
+          m.status === 'Completed' ? 'Upcoming' : 'Completed';
+        return { ...m, status: nextStatus };
+      });
+      handleUpdateActiveEvent({ ...activeEvent, milestones: nextMilestones });
+      triggerToast('Updated milestone completion status.');
+    },
+    [activeEvent, handleUpdateActiveEvent, triggerToast]
+  );
 
-  const handleQuickExportICS = () => {
+  const handleQuickExportICS = useCallback(() => {
     const icsContent = generateEventICS(activeEvent);
     const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -191,7 +246,7 @@ export default function App() {
       lastSyncedAt: 'Just now',
     });
     triggerToast(`Downloaded .ICS calendar bundle for "${activeEvent.name}".`);
-  };
+  }, [activeEvent, handleUpdateActiveEvent, triggerToast]);
 
   // Search matches across active event
   const searchResults = useMemo(() => {
@@ -222,39 +277,52 @@ export default function App() {
     return results.slice(0, 6);
   }, [searchQuery, activeEvent]);
 
-  // Computed metrics for Overview
-  const budgetSummary = calculateBudgetSummary(
-    activeEvent.totalBudget,
-    activeEvent.budgetCategories
+  // Memoized Overview metrics
+  const budgetSummary = useMemo(
+    () => calculateBudgetSummary(activeEvent.totalBudget, activeEvent.budgetCategories),
+    [activeEvent.totalBudget, activeEvent.budgetCategories]
   );
-  const daysUntil = getDaysUntilEvent(activeEvent.date);
-  const completedMilestones = activeEvent.milestones.filter(
-    (m) => m.status === 'Completed'
-  ).length;
-  const planningProgress =
-    activeEvent.milestones.length > 0
-      ? Math.round((completedMilestones / activeEvent.milestones.length) * 100)
-      : 45;
+  const daysUntil = useMemo(() => getDaysUntilEvent(activeEvent.date), [activeEvent.date]);
+  const completedMilestones = useMemo(
+    () => activeEvent.milestones.filter((m) => m.status === 'Completed').length,
+    [activeEvent.milestones]
+  );
+  const planningProgress = useMemo(
+    () =>
+      activeEvent.milestones.length > 0
+        ? Math.round((completedMilestones / activeEvent.milestones.length) * 100)
+        : 45,
+    [activeEvent.milestones.length, completedMilestones]
+  );
 
   const eventAccentHex = CATEGORY_SHOWCASE[activeEvent.category].accentHex;
   const studioTitle = CATEGORY_SHOWCASE[activeEvent.category].studioTitle;
 
-  const navItems: { id: WorkspaceSection; label: string; icon: React.ReactNode }[] = [
-    { id: 'overview', label: 'Overview', icon: <LayoutDashboard className="w-4 h-4" /> },
-    { id: 'studio', label: studioTitle, icon: <Compass className="w-4 h-4" /> },
-    { id: 'events', label: 'My Events', icon: <FolderKanban className="w-4 h-4" /> },
-    { id: 'budget', label: 'Budget Studio', icon: <Wallet className="w-4 h-4" /> },
-    { id: 'timeline', label: 'Timeline', icon: <Calendar className="w-4 h-4" /> },
-    { id: 'vendors', label: 'Vendors', icon: <Store className="w-4 h-4" /> },
-    { id: 'guests', label: 'Guest Management', icon: <Users className="w-4 h-4" /> },
-    { id: 'ideas', label: 'Idea Studio', icon: <Lightbulb className="w-4 h-4" /> },
-    { id: 'copilot', label: 'AI Copilot', icon: <Sparkles className="w-4 h-4" /> },
-    { id: 'settings', label: 'Settings', icon: <SettingsIcon className="w-4 h-4" /> },
-  ];
+  const navItems: { id: WorkspaceSection; label: string; icon: React.ReactNode }[] = useMemo(
+    () => [
+      { id: 'overview', label: 'Overview', icon: <LayoutDashboard className="w-4 h-4" /> },
+      { id: 'studio', label: studioTitle, icon: <Compass className="w-4 h-4" /> },
+      { id: 'events', label: 'My Events', icon: <FolderKanban className="w-4 h-4" /> },
+      { id: 'budget', label: 'Budget Studio', icon: <Wallet className="w-4 h-4" /> },
+      { id: 'timeline', label: 'Timeline', icon: <Calendar className="w-4 h-4" /> },
+      { id: 'vendors', label: 'Vendors', icon: <Store className="w-4 h-4" /> },
+      { id: 'guests', label: 'Guest Management', icon: <Users className="w-4 h-4" /> },
+      { id: 'ideas', label: 'Idea Studio', icon: <Lightbulb className="w-4 h-4" /> },
+      { id: 'copilot', label: 'AI Copilot', icon: <Sparkles className="w-4 h-4" /> },
+      { id: 'settings', label: 'Settings', icon: <SettingsIcon className="w-4 h-4" /> },
+    ],
+    [studioTitle]
+  );
 
   if (environment === 'marketing') {
     return (
       <>
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-[#C59A52] focus:text-[#182C28] focus:font-semibold focus:rounded"
+        >
+          Skip to main content
+        </a>
         <MarketingExperience
           selectedCategory={marketingCategory}
           plannerName={plannerName}
@@ -263,26 +331,36 @@ export default function App() {
           onOpenWizard={handleOpenWizard}
           onEnterWorkspace={handleEnterWorkspace}
         />
-        <EventWizardModal
-          isOpen={wizardOpen}
-          initialCategory={wizardCategory}
-          initialPreset={wizardPreset}
-          onClose={() => setWizardOpen(false)}
-          onComplete={(newEvt) => {
-            setEvents((prev) => [newEvt, ...prev]);
-            setActiveEventId(newEvt.id);
-            setWizardOpen(false);
-            setEnvironment('workspace');
-            setActiveSection('overview');
-            triggerToast(`Created "${newEvt.name}" workspace with ELEGANTIA AI.`);
-          }}
-        />
+        {wizardOpen && (
+          <Suspense fallback={null}>
+            <EventWizardModal
+              isOpen={wizardOpen}
+              initialCategory={wizardCategory}
+              initialPreset={wizardPreset}
+              onClose={() => setWizardOpen(false)}
+              onComplete={(newEvt) => {
+                setEvents((prev) => [newEvt, ...prev]);
+                setActiveEventId(newEvt.id);
+                setWizardOpen(false);
+                setEnvironment('workspace');
+                setActiveSection('overview');
+                triggerToast(`Created "${newEvt.name}" workspace with ELEGANTIA AI.`);
+              }}
+            />
+          </Suspense>
+        )}
       </>
     );
   }
 
   return (
     <div className="min-h-screen bg-[#F5F0E8] text-[#292A27] flex">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-[#C59A52] focus:text-[#182C28] focus:font-semibold focus:rounded"
+      >
+        Skip to main content
+      </a>
       {/* DESKTOP SIDEBAR (Collapsible) */}
       <aside
         aria-label="Workspace Sidebar Navigation"
@@ -324,6 +402,7 @@ export default function App() {
                 <button
                   key={item.id}
                   type="button"
+                  aria-current={isActive ? 'page' : undefined}
                   title={sidebarCollapsed ? item.label : undefined}
                   onClick={() => setActiveSection(item.id)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-xs sm:text-sm font-medium transition-colors cursor-pointer ${
@@ -655,434 +734,39 @@ export default function App() {
         )}
 
         {/* MAIN VIEWPORT */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-8">
+        <main id="main-content" tabIndex={-1} className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-8 focus:outline-none">
           {/* ================================================================
               OVERVIEW SECTION
              ================================================================ */}
           {activeSection === 'overview' && (
-            <div className="space-y-8">
-              {/* Section 1: Personalized Greeting & Event Identity + Category Mode Selector */}
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-xs font-semibold">
-                    <span style={{ color: eventAccentHex }}>
-                      {studioTitle.toUpperCase()}
-                    </span>
-                    <span aria-hidden="true" className="text-[#292A27]/40">
-                      ·
-                    </span>
-                    <span className="text-[#292A27]/70">
-                      Welcome back, {plannerName} — Every detail is on schedule
-                    </span>
-                  </div>
-                  <h1 className="font-editorial text-3xl sm:text-4xl font-semibold text-[#182C28]">
-                    {activeEvent.name}
-                  </h1>
-                </div>
-
-                {/* Quick Studio Mode Switcher */}
-                <div className="flex flex-wrap items-center gap-2 max-w-full">
-                  <div
-                    role="group"
-                    aria-label="Switch active studio mode"
-                    className="inline-flex p-1 bg-[#EAE2D6] rounded-md border border-[#D8C9B8] overflow-x-auto max-w-full"
-                  >
-                    {(['wedding', 'birthday', 'community'] as EventCategory[]).map(
-                      (cat) => {
-                        const active = activeEvent.category === cat;
-                        return (
-                          <button
-                            key={cat}
-                            type="button"
-                            onClick={() => handleSwitchCategoryStudio(cat)}
-                            style={
-                              active
-                                ? {
-                                    backgroundColor:
-                                      CATEGORY_SHOWCASE[cat].accentHex,
-                                    color: '#FFFFFF',
-                                  }
-                                : undefined
-                            }
-                            className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                              active ? '' : 'text-[#292A27] hover:text-[#182C28]'
-                            }`}
-                          >
-                            {CATEGORY_SHOWCASE[cat].studioTitle}
-                          </button>
-                        );
-                      }
-                    )}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveSection('studio')}
-                    className="px-4 py-2 text-xs font-semibold text-white bg-[#182C28] hover:bg-[#243f39] rounded-md whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    Open {studioTitle} →
-                  </button>
-                </div>
-              </div>
-
-              {/* 1-Click Quick Operational Actions Bar */}
-              <div className="bg-white rounded-lg border border-[#D8C9B8] p-4 flex flex-wrap items-center justify-between gap-3">
-                <span className="text-xs font-semibold uppercase tracking-wider text-[#315B50]">
-                  Quick Studio Actions
-                </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setActiveSection('budget')}
-                    className="px-3 py-1.5 text-xs font-semibold text-[#182C28] bg-[#F5F0E8] hover:bg-[#EAE2D6] border border-[#D8C9B8] rounded-md whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    + Log Expense / Optimize Budget
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveSection('timeline')}
-                    className="px-3 py-1.5 text-xs font-semibold text-[#182C28] bg-[#F5F0E8] hover:bg-[#EAE2D6] border border-[#D8C9B8] rounded-md whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    + Add Milestone
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveSection('vendors')}
-                    className="px-3 py-1.5 text-xs font-semibold text-[#182C28] bg-[#F5F0E8] hover:bg-[#EAE2D6] border border-[#D8C9B8] rounded-md whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    + Compare Vendors
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleQuickExportICS}
-                    className="px-3 py-1.5 text-xs font-semibold text-[#315B50] bg-[#F5F0E8] hover:bg-[#EAE2D6] border border-[#D8C9B8] rounded-md flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Export .ICS Calendar</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCopilotDrawerOpen(true)}
-                    className="px-3 py-1.5 text-xs font-semibold text-[#182C28] bg-[#C59A52] hover:bg-[#d3a962] rounded-md flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>Ask ELEGANTIA AI</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Section 2: Prominent Event Overview (Cover, Title, Location, Date, Countdown, Progress) */}
-              <div className="bg-white rounded-lg border border-[#D8C9B8] overflow-hidden">
-                <div className="grid grid-cols-1 lg:grid-cols-12 items-stretch">
-                  <div className="lg:col-span-5">
-                    <EditorialVisual
-                      preset={activeEvent.coverVisualPreset}
-                      aspectRatio="4:3"
-                      caption={activeEvent.venueType}
-                      className="w-full h-full"
-                    />
-                  </div>
-
-                  <div className="lg:col-span-7 p-6 sm:p-8 flex flex-col justify-between space-y-6">
-                    <div className="space-y-3">
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#292A27]/75">
-                        <span className="font-semibold text-[#182C28]">
-                          {activeEvent.location}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono tabular-nums">
-                          {activeEvent.date}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="tabular-nums">
-                          {activeEvent.guestCount} Guests
-                        </span>
-                      </div>
-
-                      <h2 className="font-editorial text-2xl sm:text-3xl font-semibold text-[#182C28]">
-                        {activeEvent.theme}
-                      </h2>
-
-                      <p className="text-xs sm:text-sm text-[#292A27]/80 leading-relaxed">
-                        {activeEvent.style} — {activeEvent.foodPreference}.
-                      </p>
-                    </div>
-
-                    {/* Countdown & Planning Progress Bar */}
-                    <div className="space-y-4 pt-4 border-t border-[#F5F0E8] tabular-nums">
-                      <div className="grid grid-cols-3 gap-4">
-                        <div>
-                          <span className="text-xs text-[#292A27]/65 block">
-                            Countdown
-                          </span>
-                          <span
-                            className="font-mono text-xl sm:text-2xl font-semibold"
-                            style={{ color: eventAccentHex }}
-                          >
-                            {daysUntil} Days
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-xs text-[#292A27]/65 block">
-                            Planning Progress
-                          </span>
-                          <span className="font-mono text-xl sm:text-2xl font-semibold text-[#182C28]">
-                            {planningProgress}%
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-xs text-[#292A27]/65 block">
-                            Remaining Budget
-                          </span>
-                          <span className="font-mono text-xl sm:text-2xl font-semibold text-[#315B50]">
-                            {formatCurrency(
-                              budgetSummary.remainingToSpend,
-                              activeEvent.currency
-                            )}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="w-full h-2 bg-[#EAE2D6] rounded-full overflow-hidden">
-                        <div
-                          className="h-full transition-all"
-                          style={{
-                            width: `${Math.max(15, planningProgress)}%`,
-                            backgroundColor: eventAccentHex,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Section 3: Balanced Operational Workspace (Budget, Tasks, Vendors, Guests, AI Recommendations) */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Left 7 Columns: Budget Summary & Interactive Upcoming Tasks */}
-                <div className="lg:col-span-7 space-y-6">
-                  {/* Budget Summary */}
-                  <div className="bg-white rounded-lg border border-[#D8C9B8] p-6 space-y-4">
-                    <div className="flex items-center justify-between border-b border-[#F5F0E8] pb-3">
-                      <div>
-                        <h3 className="font-editorial text-xl font-semibold text-[#182C28]">
-                          Budget Summary
-                        </h3>
-                        <p className="text-xs text-[#292A27]/65">
-                          Total Ceiling:{' '}
-                          {formatCurrency(
-                            budgetSummary.totalBudget,
-                            activeEvent.currency
-                          )}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setActiveSection('budget')}
-                        className="text-xs font-semibold text-[#315B50] hover:underline cursor-pointer"
-                      >
-                        Open Budget Studio →
-                      </button>
-                    </div>
-
-                    <div className="divide-y divide-[#F5F0E8] text-xs sm:text-sm tabular-nums">
-                      {activeEvent.budgetCategories.slice(0, 4).map((cat) => (
-                        <div
-                          key={cat.id}
-                          className="py-2.5 flex items-center justify-between gap-4"
-                        >
-                          <span className="font-medium text-[#182C28] truncate">
-                            {cat.category}
-                          </span>
-                          <div className="font-mono text-xs shrink-0">
-                            <span className="text-[#292A27]/65">
-                              {formatCurrency(
-                                cat.actualAmount,
-                                activeEvent.currency
-                              )}{' '}
-                              /{' '}
-                            </span>
-                            <span className="font-semibold text-[#182C28]">
-                              {formatCurrency(
-                                cat.plannedAmount,
-                                activeEvent.currency
-                              )}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Interactive Upcoming Tasks (Check off directly on Overview!) */}
-                  <div className="bg-white rounded-lg border border-[#D8C9B8] p-6 space-y-4">
-                    <div className="flex items-center justify-between border-b border-[#F5F0E8] pb-3">
-                      <div>
-                        <h3 className="font-editorial text-xl font-semibold text-[#182C28]">
-                          Upcoming & Priority Milestones
-                        </h3>
-                        <p className="text-xs text-[#292A27]/65">
-                          Click any milestone checkbox to mark complete and update progress
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setActiveSection('timeline')}
-                        className="text-xs font-semibold text-[#315B50] hover:underline cursor-pointer"
-                      >
-                        Open Timeline →
-                      </button>
-                    </div>
-
-                    <div className="space-y-2.5">
-                      {activeEvent.milestones.slice(0, 5).map((m) => (
-                        <div
-                          key={m.id}
-                          className="p-3 rounded bg-[#F5F0E8]/70 border border-[#D8C9B8]/70 flex items-center justify-between gap-3"
-                        >
-                          <div className="flex items-start gap-3">
-                            <button
-                              type="button"
-                              aria-label={
-                                m.status === 'Completed'
-                                  ? `Mark "${m.title}" incomplete`
-                                  : `Complete "${m.title}"`
-                              }
-                              onClick={() =>
-                                handleToggleMilestoneFromOverview(m.id)
-                              }
-                              className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer ${
-                                m.status === 'Completed'
-                                  ? 'bg-[#315B50] border-[#315B50] text-white'
-                                  : 'bg-white border-[#D8C9B8] hover:border-[#182C28]'
-                              }`}
-                            >
-                              {m.status === 'Completed' && (
-                                <Check className="w-3 h-3" />
-                              )}
-                            </button>
-                            <div>
-                              <p
-                                className={`text-xs sm:text-sm font-medium ${
-                                  m.status === 'Completed'
-                                    ? 'line-through text-[#292A27]/50'
-                                    : 'text-[#182C28]'
-                                }`}
-                              >
-                                {m.title}
-                              </p>
-                              <p className="text-xs text-[#292A27]/65">
-                                {m.status} · {m.priority} Priority · {m.assignee}
-                              </p>
-                            </div>
-                          </div>
-                          <span className="font-mono text-xs text-[#315B50] tabular-nums shrink-0">
-                            {m.dueDate}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right 5 Columns: AI Recommendations, Vendor Progress & Guest Statistics */}
-                <div className="lg:col-span-5 space-y-6">
-                  {/* AI Recommendations */}
-                  <div className="bg-[#182C28] text-[#F5F0E8] rounded-lg p-6 space-y-4">
-                    <div className="flex items-center justify-between border-b border-[#315B50] pb-3">
-                      <span className="text-xs font-semibold uppercase tracking-wider text-[#C59A52]">
-                        ELEGANTIA AI Recommendations
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setCopilotDrawerOpen(true)}
-                        className="text-xs text-[#D8C9B8] hover:text-white underline cursor-pointer"
-                      >
-                        Ask Copilot →
-                      </button>
-                    </div>
-                    <div className="space-y-3">
-                      {activeEvent.recommendations.map((rec, i) => (
-                        <div
-                          key={i}
-                          className="p-3.5 rounded bg-[#12221F] border border-[#315B50] text-xs text-[#F5F0E8] leading-relaxed"
-                        >
-                          {rec}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Vendor Progress & Guest Statistics */}
-                  <div className="bg-white rounded-lg border border-[#D8C9B8] p-6 space-y-5 tabular-nums">
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <h3 className="font-editorial text-xl font-semibold text-[#182C28]">
-                          Vendor Progress
-                        </h3>
-                        <button
-                          type="button"
-                          onClick={() => setActiveSection('vendors')}
-                          className="text-xs font-semibold text-[#315B50] hover:underline cursor-pointer"
-                        >
-                          Manage Vendors →
-                        </button>
-                      </div>
-                      <p className="text-xs text-[#292A27]/75">
-                        <strong className="text-[#182C28]">
-                          {
-                            activeEvent.vendors.filter(
-                              (v) => v.bookingStatus === 'Contracted'
-                            ).length
-                          }
-                        </strong>{' '}
-                        contracted out of {activeEvent.vendors.length} shortlisted
-                        vendors.
-                      </p>
-                    </div>
-
-                    <div className="pt-4 border-t border-[#F5F0E8] space-y-2">
-                      <div className="flex items-center justify-between">
-                        <h3 className="font-editorial text-xl font-semibold text-[#182C28]">
-                          Guest & Calendar Sync
-                        </h3>
-                        <button
-                          type="button"
-                          onClick={() => setActiveSection('guests')}
-                          className="text-xs font-semibold text-[#315B50] hover:underline cursor-pointer"
-                        >
-                          RSVPs & .ICS →
-                        </button>
-                      </div>
-                      <p className="text-xs text-[#292A27]/75">
-                        Target capacity:{' '}
-                        <strong className="text-[#182C28]">
-                          {activeEvent.guestCount}
-                        </strong>{' '}
-                        guests · Calendar feed{' '}
-                        <strong className="text-[#315B50]">
-                          {activeEvent.calendarSynced
-                            ? 'Synchronized'
-                            : 'Ready to Export'}
-                        </strong>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <OverviewDashboard
+              activeEvent={activeEvent}
+              plannerName={plannerName}
+              eventAccentHex={eventAccentHex}
+              studioTitle={studioTitle}
+              daysUntil={daysUntil}
+              planningProgress={planningProgress}
+              budgetSummary={budgetSummary}
+              onSwitchCategoryStudio={handleSwitchCategoryStudio}
+              onNavigate={setActiveSection}
+              onQuickExportICS={handleQuickExportICS}
+              onOpenCopilotDrawer={() => setCopilotDrawerOpen(true)}
+              onToggleMilestone={handleToggleMilestoneFromOverview}
+            />
           )}
 
           {/* ================================================================
               CATEGORY-SPECIFIC STUDIO (Wedding / Birthday / Community)
              ================================================================ */}
           {activeSection === 'studio' && (
-            <CategoryStudioView
-              event={activeEvent}
-              onUpdateEvent={handleUpdateActiveEvent}
-              onNavigate={setActiveSection}
-              onNotify={triggerToast}
-            />
+            <Suspense fallback={<StudioLoadingFallback />}>
+              <CategoryStudioView
+                event={activeEvent}
+                onUpdateEvent={handleUpdateActiveEvent}
+                onNavigate={setActiveSection}
+                onNotify={triggerToast}
+              />
+            </Suspense>
           )}
 
           {/* ================================================================
@@ -1180,66 +864,78 @@ export default function App() {
               SMART BUDGET STUDIO
              ================================================================ */}
           {activeSection === 'budget' && (
-            <SmartBudgetStudio
-              event={activeEvent}
-              onUpdateEvent={handleUpdateActiveEvent}
-              onNotify={triggerToast}
-            />
+            <Suspense fallback={<StudioLoadingFallback />}>
+              <SmartBudgetStudio
+                event={activeEvent}
+                onUpdateEvent={handleUpdateActiveEvent}
+                onNotify={triggerToast}
+              />
+            </Suspense>
           )}
 
           {/* ================================================================
               TIMELINE STUDIO
              ================================================================ */}
           {activeSection === 'timeline' && (
-            <TimelineStudio
-              event={activeEvent}
-              onUpdateEvent={handleUpdateActiveEvent}
-              onNotify={triggerToast}
-            />
+            <Suspense fallback={<StudioLoadingFallback />}>
+              <TimelineStudio
+                event={activeEvent}
+                onUpdateEvent={handleUpdateActiveEvent}
+                onNotify={triggerToast}
+              />
+            </Suspense>
           )}
 
           {/* ================================================================
               VENDOR STUDIO
              ================================================================ */}
           {activeSection === 'vendors' && (
-            <VendorStudio
-              event={activeEvent}
-              onUpdateEvent={handleUpdateActiveEvent}
-              onNotify={triggerToast}
-            />
+            <Suspense fallback={<StudioLoadingFallback />}>
+              <VendorStudio
+                event={activeEvent}
+                onUpdateEvent={handleUpdateActiveEvent}
+                onNotify={triggerToast}
+              />
+            </Suspense>
           )}
 
           {/* ================================================================
               GUEST MANAGEMENT & CALENDAR SYNC
              ================================================================ */}
           {activeSection === 'guests' && (
-            <GuestAndCalendarView
-              event={activeEvent}
-              onUpdateEvent={handleUpdateActiveEvent}
-              onNotify={triggerToast}
-            />
+            <Suspense fallback={<StudioLoadingFallback />}>
+              <GuestAndCalendarView
+                event={activeEvent}
+                onUpdateEvent={handleUpdateActiveEvent}
+                onNotify={triggerToast}
+              />
+            </Suspense>
           )}
 
           {/* ================================================================
               IDEA STUDIO
              ================================================================ */}
           {activeSection === 'ideas' && (
-            <IdeaStudio
-              event={activeEvent}
-              onUpdateEvent={handleUpdateActiveEvent}
-              onNotify={triggerToast}
-            />
+            <Suspense fallback={<StudioLoadingFallback />}>
+              <IdeaStudio
+                event={activeEvent}
+                onUpdateEvent={handleUpdateActiveEvent}
+                onNotify={triggerToast}
+              />
+            </Suspense>
           )}
 
           {/* ================================================================
               AI COPILOT
              ================================================================ */}
           {activeSection === 'copilot' && (
-            <AICopilotPanel
-              event={activeEvent}
-              onUpdateEvent={handleUpdateActiveEvent}
-              onNotify={triggerToast}
-            />
+            <Suspense fallback={<StudioLoadingFallback />}>
+              <AICopilotPanel
+                event={activeEvent}
+                onUpdateEvent={handleUpdateActiveEvent}
+                onNotify={triggerToast}
+              />
+            </Suspense>
           )}
 
           {/* ================================================================
@@ -1400,30 +1096,37 @@ export default function App() {
               </button>
             </div>
             <div className="p-6 flex-1">
-              <AICopilotPanel
-                event={activeEvent}
-                onUpdateEvent={handleUpdateActiveEvent}
-                onNotify={triggerToast}
-              />
+              <Suspense fallback={<StudioLoadingFallback />}>
+                <AICopilotPanel
+                  event={activeEvent}
+                  onUpdateEvent={handleUpdateActiveEvent}
+                  onNotify={triggerToast}
+                />
+              </Suspense>
             </div>
           </div>
         </div>
       )}
 
       {/* Event Creation Wizard Modal */}
-      <EventWizardModal
-        isOpen={wizardOpen}
-        initialCategory={wizardCategory}
-        initialPreset={wizardPreset}
-        onClose={() => setWizardOpen(false)}
-        onComplete={(newEvt) => {
-          setEvents((prev) => [newEvt, ...prev]);
-          setActiveEventId(newEvt.id);
-          setWizardOpen(false);
-          setActiveSection('overview');
-          triggerToast(`Generated "${newEvt.name}" workspace with ELEGANTIA AI.`);
-        }}
-      />
+      {wizardOpen && (
+        <Suspense fallback={null}>
+          <EventWizardModal
+            isOpen={wizardOpen}
+            initialCategory={wizardCategory}
+            initialPreset={wizardPreset}
+            onClose={() => setWizardOpen(false)}
+            onComplete={(newEvt) => {
+              setEvents((prev) => [newEvt, ...prev]);
+              setActiveEventId(newEvt.id);
+              setWizardOpen(false);
+              setActiveSection('overview');
+              triggerToast(`Generated "${newEvt.name}" workspace with ELEGANTIA AI.`);
+            }}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
+

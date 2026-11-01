@@ -55,3 +55,22 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #182C28;
 }
+
+/* High-contrast keyboard focus ring for WCAG 2.1 AA compliance */
+:focus-visible {
+  outline: 2px solid #C59A52;
+  outline-offset: 2px;
+}
+
+/* Respect user OS reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+

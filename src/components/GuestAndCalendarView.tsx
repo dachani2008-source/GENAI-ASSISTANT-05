@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { Calendar, CheckCircle2, Download, Plus, RefreshCw, Users } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Calendar, CheckCircle2, Download, ExternalLink, Plus, RefreshCw, Users } from 'lucide-react';
 import { EventWorkspace, GuestItem, RsvpStatus } from '../types/event';
-import { generateEventICS } from '../utils/planningLogic';
+import { generateEventICS, generateGoogleCalendarUrl } from '../utils/planningLogic';
 
 interface GuestAndCalendarViewProps {
   event: EventWorkspace;
@@ -20,6 +20,8 @@ export const GuestAndCalendarView: React.FC<GuestAndCalendarViewProps> = ({
   const [dietary, setDietary] = useState('');
   const [tableAssign, setTableAssign] = useState('Table 04 — Olive');
   const [roleGroup, setRoleGroup] = useState('Guest');
+
+  const googleCalendarUrl = useMemo(() => generateGoogleCalendarUrl(event), [event]);
 
   const handleAddGuest = (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,6 +107,22 @@ export const GuestAndCalendarView: React.FC<GuestAndCalendarViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <a
+              href={googleCalendarUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() =>
+                onUpdateEvent({
+                  ...event,
+                  calendarSynced: true,
+                  lastSyncedAt: 'Just now (Google Calendar)',
+                })
+              }
+              className="px-4 py-2.5 text-xs font-semibold text-[#F5F0E8] bg-[#315B50] hover:bg-[#3c6e61] rounded-md flex items-center gap-1.5 cursor-pointer"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>Sync to Google Calendar</span>
+            </a>
             <button
               type="button"
               onClick={handleSyncCalendarState}

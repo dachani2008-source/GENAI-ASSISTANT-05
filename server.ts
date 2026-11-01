@@ -1,15 +1,96 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  sanitizeTextInput,
+  suggestThemesFromPreferences,
+  ThemePreferenceInput,
+} from './src/utils/planningLogic';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+interface BudgetCategoryInput {
+  id: string;
+  category: string;
+  plannedAmount: number;
+  actualAmount: number;
+  locked: boolean;
+}
+
+// Bounded in-memory LRU cache for fast repeated AI/deterministic synthesis
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 100;
+const responseCache = new Map<string, { expiresAt: number; payload: unknown }>();
+
+function getCachedPayload<T>(key: string): T | null {
+  const entry = responseCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    responseCache.delete(key);
+    return null;
+  }
+  return entry.payload as T;
+}
+
+function setCachedPayload(key: string, payload: unknown): void {
+  if (responseCache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = responseCache.keys().next().value;
+    if (oldestKey) responseCache.delete(oldestKey);
+  }
+  responseCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, payload });
+}
+
+// Sliding-window per-IP rate limiter for API protection
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX_REQUESTS = 120;
+const ipRequestCounts = new Map<string, { count: number; resetAt: number }>();
+
+function securityAndRateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // Security Headers (iframe-compatible for AI Studio preview)
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+
+  if (req.path.startsWith('/api/')) {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'local';
+    const now = Date.now();
+    const record = ipRequestCounts.get(clientIp);
+
+    if (!record || now > record.resetAt) {
+      ipRequestCounts.set(clientIp, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+      res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
+      res.setHeader('X-RateLimit-Remaining', String(RATE_LIMIT_MAX_REQUESTS - 1));
+    } else {
+      record.count += 1;
+      const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - record.count);
+      res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
+      res.setHeader('X-RateLimit-Remaining', String(remaining));
+      if (record.count > RATE_LIMIT_MAX_REQUESTS) {
+        res.status(429).json({ error: 'Too many requests. Please retry in a moment.' });
+        return;
+      }
+    }
+  }
+
+  next();
+}
+
+function isTestEnv(): boolean {
+  return (
+    process.env.NODE_ENV === 'test' ||
+    process.argv.some((arg) => arg.includes('test'))
+  );
+}
+
 function getAiClient(): GoogleGenAI | null {
+  if (isTestEnv()) {
+    return null;
+  }
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     return null;
@@ -25,28 +106,54 @@ function getAiClient(): GoogleGenAI | null {
 }
 
 export const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.disable('x-powered-by');
+app.use(securityAndRateLimitMiddleware);
+app.use(express.json({ limit: '1mb' }));
 
 // Health check endpoint for Vercel & Cloud Run
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'ELEGANTIA AI' });
+  res.json({ status: 'ok', service: 'ELEGANTIA AI', timestamp: new Date().toISOString() });
 });
 
 // 1. Generate Complete Event Plan from 5-Step Wizard
 app.post('/api/gemini/generate-plan', async (req, res) => {
-  const draft = req.body?.draft;
-  if (!draft || !draft.name) {
+  const rawDraft = req.body?.draft;
+  const safeName = sanitizeTextInput(rawDraft?.name, 120);
+  if (!rawDraft || !safeName) {
     res.status(400).json({ error: 'Missing event draft parameters.' });
     return;
   }
 
-    const ai = getAiClient();
-    const totalBudget = Number(draft.totalBudget) || 25000;
-    const category = draft.category || 'wedding';
+  const draft = {
+    ...rawDraft,
+    name: safeName,
+    location: sanitizeTextInput(rawDraft.location || 'Metropolitan Venue', 120),
+    venueType: sanitizeTextInput(rawDraft.venueType || 'Private Architectural Venue', 100),
+    style: sanitizeTextInput(rawDraft.style || 'Contemporary Editorial', 100),
+    theme: sanitizeTextInput(rawDraft.theme || 'Candlelit Architectural Warmth', 120),
+    food: sanitizeTextInput(rawDraft.food || 'Seasonal Tasting Menu', 100),
+    culturalPreferences: sanitizeTextInput(rawDraft.culturalPreferences || '', 150),
+    specialRequirements: sanitizeTextInput(rawDraft.specialRequirements || '', 150),
+  };
 
-    if (ai) {
-      try {
-        const prompt = `Create a structured event plan for ELEGANTIA AI.
+  const cacheKey = `plan:${JSON.stringify(draft)}`;
+  const cached = getCachedPayload<Record<string, unknown>>(cacheKey);
+  if (cached) {
+    res.setHeader('X-Cache', 'HIT');
+    res.json(cached);
+    return;
+  }
+  res.setHeader('X-Cache', 'MISS');
+
+  const ai = getAiClient();
+  const totalBudget = Math.max(200, Number(draft.totalBudget) || 25000);
+  const category = ['wedding', 'birthday', 'community'].includes(draft.category)
+    ? draft.category
+    : 'wedding';
+
+  if (ai) {
+    try {
+      const prompt = `Create a structured event plan for ELEGANTIA AI.
 Event Name: ${draft.name}
 Category: ${category}
 Location: ${draft.location}
@@ -119,7 +226,9 @@ Ensure budget allocations sum to at most ${totalBudget} and reflect the category
         });
 
         const parsed = JSON.parse((response.text ?? '{}').trim());
-        res.json({ source: 'gemini', plan: parsed });
+        const geminiPayload = { source: 'gemini', plan: parsed };
+        setCachedPayload(cacheKey, geminiPayload);
+        res.json(geminiPayload);
         return;
       } catch (err) {
         console.warn('Gemini generate-plan fallback triggered:', (err as Error).message);
@@ -150,7 +259,7 @@ Ensure budget allocations sum to at most ${totalBudget} and reflect the category
             { category: 'Wayfinding Signage, Badges & Volunteer Ops', ratio: 0.16, notes: `Theme: ${draft.theme}` },
           ];
 
-    res.json({
+    const payload = {
       source: 'synthesized',
       plan: {
         recommendations: [
@@ -176,7 +285,9 @@ Ensure budget allocations sum to at most ${totalBudget} and reflect the category
           { time: '19:00', title: `Celebration Dining (${draft.food || 'Curated Menu'})`, location: 'Dining Salon', lead: 'Culinary Director', notes: `Seated experience for ${draft.guestCount} guests.` },
         ],
       },
-    });
+    };
+    setCachedPayload(cacheKey, payload);
+    res.json(payload);
   });
 
   // 2. Optimize Budget with Gemini AI
@@ -187,13 +298,14 @@ Ensure budget allocations sum to at most ${totalBudget} and reflect the category
       return;
     }
 
+    const typedCategories = categories as BudgetCategoryInput[];
     const ai = getAiClient();
     if (ai) {
       try {
         const prompt = `Analyze and optimize this event budget of ${totalBudget} ${currency || 'USD'}.
 Priorities: ${(priorities || []).join(', ')}.
 Categories: ${JSON.stringify(
-          categories.map((c: Record<string, unknown>) => ({
+          typedCategories.map((c) => ({
             id: c.id,
             category: c.category,
             plannedAmount: c.plannedAmount,
@@ -249,7 +361,7 @@ Rules:
 
     // Deterministic server-side calculation
     let saved = 0;
-    const adjustments = categories.map((c: { id: string; category: string; plannedAmount: number; actualAmount: number; locked: boolean }) => {
+    const adjustments = typedCategories.map((c) => {
       if (c.locked) {
         return {
           categoryId: c.id,
@@ -289,13 +401,16 @@ Rules:
   // 3. Regenerate / Suggest Creative Ideas in Idea Studio
   app.post('/api/gemini/generate-ideas', async (req, res) => {
     const { eventName, eventCategory, ideaCategory, theme, style } = req.body || {};
+    const safeEventName = sanitizeTextInput(eventName || 'Signature Celebration', 100);
+    const safeTheme = sanitizeTextInput(theme || 'Architectural Warmth', 100);
+    const safeStyle = sanitizeTextInput(style || 'Contemporary Editorial', 100);
     const ai = getAiClient();
 
     if (ai) {
       try {
         const response = await ai.models.generateContent({
           model: 'gemini-3.8-flash',
-          contents: `Suggest 2 elevated, concrete ${ideaCategory || 'Themes'} concepts for a ${eventCategory} event named "${eventName}" with theme "${theme}" and style "${style}".`,
+          contents: `Suggest 2 elevated, concrete ${ideaCategory || 'Themes'} concepts for a ${eventCategory} event named "${safeEventName}" with theme "${safeTheme}" and style "${safeStyle}".`,
           config: {
             systemInstruction:
               'Return 2 editorial, design-forward event concepts in JSON format. Avoid generic clichés.',
@@ -322,30 +437,105 @@ Rules:
       }
     }
 
-    const cat = ideaCategory && ideaCategory !== 'All' ? ideaCategory : 'Decoration';
+    const cat = ideaCategory && ideaCategory !== 'All' ? sanitizeTextInput(ideaCategory, 40) : 'Decoration';
     res.json({
       source: 'curated',
       ideas: [
         {
-          title: `Bespoke ${cat} Vignette — ${theme || 'Architectural Warmth'}`,
+          title: `Bespoke ${cat} Vignette — ${safeTheme}`,
           category: cat,
-          description: `Custom tactile installation pairing natural travertine plinths, hand-dipped beeswax tapers, and seasonal botanicals tailored to ${eventName}.`,
+          description: `Custom tactile installation pairing natural travertine plinths, hand-dipped beeswax tapers, and seasonal botanicals tailored to ${safeEventName}.`,
           estimatedImpact: '$680 – $1,200 estimated',
         },
         {
           title: `Interactive Guest Keepsake & Sensory Station`,
           category: cat,
-          description: `Curated moment designed for ${style || 'contemporary'} flow, uniting acoustic ambiance with artisanal local craftsmanship.`,
+          description: `Curated moment designed for ${safeStyle} flow, uniting acoustic ambiance with artisanal local craftsmanship.`,
           estimatedImpact: '$24 per guest',
         },
       ],
     });
   });
 
-  // 4. Contextual AI Copilot
+  // 4. Suggest Personalized Themes Based on User Preferences
+  app.post('/api/gemini/suggest-themes', async (req, res) => {
+    const rawPrefs = (req.body || {}) as Partial<ThemePreferenceInput>;
+    const prefs: ThemePreferenceInput = {
+      eventCategory:
+        rawPrefs.eventCategory === 'birthday' || rawPrefs.eventCategory === 'community'
+          ? rawPrefs.eventCategory
+          : 'wedding',
+      season: sanitizeTextInput(rawPrefs.season || 'Autumn', 60) || 'Autumn',
+      setting: sanitizeTextInput(rawPrefs.setting || 'Architectural Courtyard', 80) || 'Architectural Courtyard',
+      colorMood: sanitizeTextInput(rawPrefs.colorMood || 'Evergreen, Burgundy & Antique Gold', 80) || 'Evergreen, Burgundy & Antique Gold',
+      culturalNotes: sanitizeTextInput(rawPrefs.culturalNotes || '', 120),
+      vibe: sanitizeTextInput(rawPrefs.vibe || 'Contemporary Editorial', 80) || 'Contemporary Editorial',
+    };
+
+    const cacheKey = `themes:${JSON.stringify(prefs)}`;
+    const cached = getCachedPayload<Record<string, unknown>>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.json(cached);
+      return;
+    }
+
+    const ai = getAiClient();
+    if (ai) {
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: `Suggest 3 bespoke event themes for a ${prefs.eventCategory} event based on these preferences:
+Season: ${prefs.season}
+Setting: ${prefs.setting}
+Color Mood: ${prefs.colorMood}
+Vibe: ${prefs.vibe}
+Cultural / Personal Notes: ${prefs.culturalNotes || 'None'}`,
+          config: {
+            systemInstruction:
+              'You are ELEGANTIA AI Creative Director. Return 3 structured theme suggestions with title, tagline, style, description, 4 hex palette colors, 3 decorHighlights, and recommendedLighting.',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  tagline: { type: Type.STRING },
+                  style: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  palette: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  decorHighlights: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  recommendedLighting: { type: Type.STRING },
+                },
+              },
+            },
+          },
+        });
+        const themes = JSON.parse((response.text ?? '[]').trim());
+        if (Array.isArray(themes) && themes.length > 0) {
+          const payload = { source: 'gemini', themes };
+          setCachedPayload(cacheKey, payload);
+          res.json(payload);
+          return;
+        }
+      } catch (err) {
+        console.warn('Gemini suggest-themes fallback triggered:', (err as Error).message);
+      }
+    }
+
+    const fallbackThemes = suggestThemesFromPreferences(prefs);
+    const payload = { source: 'preference-engine', themes: fallbackThemes };
+    setCachedPayload(cacheKey, payload);
+    res.json(payload);
+  });
+
+  // 5. Contextual AI Copilot
   app.post('/api/gemini/copilot', async (req, res) => {
     const { prompt, eventContext } = req.body || {};
-    if (!prompt) {
+    const safePrompt = sanitizeTextInput(prompt, 400);
+    if (!safePrompt) {
       res.status(400).json({ error: 'Prompt is required.' });
       return;
     }
@@ -355,7 +545,7 @@ Rules:
       try {
         const response = await ai.models.generateContent({
           model: 'gemini-3.8-flash',
-          contents: `Event Context: ${JSON.stringify(eventContext)}\n\nPlanner Request: ${prompt}`,
+          contents: `Event Context: ${JSON.stringify(eventContext)}\n\nPlanner Request: ${safePrompt}`,
           config: {
             systemInstruction:
               'You are the ELEGANTIA AI Executive Copilot. Answer concisely using the exact numbers, vendor names, and milestone dates from the provided Event Context. Also propose 1 concrete optional state modification in proposedAction if helpful.',
@@ -390,15 +580,20 @@ Rules:
     }
 
     // Contextual deterministic response grounded in real eventContext
-    const q = String(prompt).toLowerCase();
-    const evtName = eventContext?.name || 'your event';
-    const currency = eventContext?.currency || 'USD';
+    const q = safePrompt.toLowerCase();
+    const evtName = sanitizeTextInput(eventContext?.name || 'your event', 100);
+    const currency = sanitizeTextInput(eventContext?.currency || 'USD', 10);
     const totalBudget = Number(eventContext?.totalBudget) || 0;
     const allocated = Number(eventContext?.allocated) || 0;
     const spent = Number(eventContext?.spent) || 0;
     const overdueCount = Number(eventContext?.overdueCount) || 0;
-    const topMilestone = eventContext?.nextMilestoneTitle || 'Confirm final floorplan & catering headcount';
-    const unbookedVendors = eventContext?.pendingVendorNames || ['Floral & Scenography comparison quote'];
+    const topMilestone = sanitizeTextInput(
+      eventContext?.nextMilestoneTitle || 'Confirm final floorplan & catering headcount',
+      140
+    );
+    const unbookedVendors = Array.isArray(eventContext?.pendingVendorNames)
+      ? eventContext.pendingVendorNames
+      : ['Floral & Scenography comparison quote'];
 
     if (q.includes('budget') || q.includes('reduce') || q.includes('spend')) {
       const savings = Math.max(650, Math.round((allocated - spent) * 0.14));
@@ -460,7 +655,7 @@ Rules:
 
     res.json({
       source: 'contextual-engine',
-      reply: `Based on ${evtName}'s aesthetic direction ("${eventContext?.theme || 'Contemporary Editorial'}"), we recommend elevating tactile guest touchpoints with warm 2400K lighting, natural stone and linen textures, and a cohesive run-of-show.`,
+      reply: `Based on ${evtName}'s aesthetic direction ("${sanitizeTextInput(eventContext?.theme || 'Contemporary Editorial', 100)}"), we recommend elevating tactile guest touchpoints with warm 2400K lighting, natural stone and linen textures, and a cohesive run-of-show.`,
       bulletPoints: [
         `Anchor the arrival experience with a signature seasonal welcome pour and acoustic prelude.`,
         `Use low architectural floral vessels and tall taper candles to preserve sightlines across dining tables.`,
@@ -487,7 +682,13 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
+    app.use(
+      express.static(distPath, {
+        maxAge: '1y',
+        immutable: true,
+        index: false,
+      })
+    );
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
@@ -498,9 +699,10 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) {
+if (!process.env.VERCEL && !isTestEnv()) {
   startServer();
 }
 
 export default app;
+
 

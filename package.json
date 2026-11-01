@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "npx --yes tsx --test src/utils/planningLogic.test.ts"
+    "test": "npx --yes tsx --test src/utils/planningLogic.test.ts src/server.test.ts src/components/Components.test.tsx",
+    "test:coverage": "npx --yes tsx --test --experimental-test-coverage src/utils/planningLogic.test.ts src/server.test.ts src/components/Components.test.tsx"
   },
   "dependencies": {
     "@google/genai": "^2.32.0",

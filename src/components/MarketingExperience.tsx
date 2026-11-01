@@ -194,6 +194,7 @@ export const MarketingExperience: React.FC<MarketingExperienceProps> = ({
         )}
       </header>
 
+      <main id="main-content" tabIndex={-1} className="focus:outline-none">
       {/* 2. EDITORIAL HERO — Split Layout on Deep Evergreen Canvas */}
       <section
         id="top"
@@ -1034,6 +1035,7 @@ export const MarketingExperience: React.FC<MarketingExperienceProps> = ({
           </div>
         </div>
       </section>
+      </main>
 
       {/* 7. QUIET FOOTER */}
       <footer className="bg-[#12221F] text-[#D8C9B8] py-10 border-t border-[#315B50]/40">
