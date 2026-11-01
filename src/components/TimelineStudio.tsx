@@ -1,12 +1,8 @@
 import React, { useState } from 'react';
 import {
-  Calendar,
   Check,
-  Clock,
-  Edit3,
   Plus,
   Trash2,
-  UserCheck,
 } from 'lucide-react';
 import {
   EventWorkspace,
@@ -33,7 +29,7 @@ export const TimelineStudio: React.FC<TimelineStudioProps> = ({
   const [newDueDate, setNewDueDate] = useState(event.date);
   const [newPriority, setNewPriority] = useState<MilestonePriority>('High');
   const [newAssignee, setNewAssignee] = useState('Clara Vance');
-  const [newPhase, setNewPhase] = useState('Production');
+  const newPhase = 'Production';
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editAssignee, setEditAssignee] = useState('');

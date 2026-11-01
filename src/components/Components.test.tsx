@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { INITIAL_EVENTS, CATEGORY_SHOWCASE } from '../data/seedEvents';
 import { calculateBudgetSummary } from '../utils/planningLogic';

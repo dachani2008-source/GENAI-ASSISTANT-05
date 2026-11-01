@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Calendar, CheckCircle2, Download, ExternalLink, Plus, RefreshCw, Users } from 'lucide-react';
+import { Download, ExternalLink, RefreshCw } from 'lucide-react';
 import { EventWorkspace, GuestItem, RsvpStatus } from '../types/event';
 import { generateEventICS, generateGoogleCalendarUrl } from '../utils/planningLogic';
 
@@ -19,7 +19,7 @@ export const GuestAndCalendarView: React.FC<GuestAndCalendarViewProps> = ({
   const [partySize, setPartySize] = useState('2');
   const [dietary, setDietary] = useState('');
   const [tableAssign, setTableAssign] = useState('Table 04 — Olive');
-  const [roleGroup, setRoleGroup] = useState('Guest');
+  const roleGroup = 'Guest';
 
   const googleCalendarUrl = useMemo(() => generateGoogleCalendarUrl(event), [event]);
 

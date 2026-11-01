@@ -4,7 +4,6 @@ import {
   Check,
   Loader2,
   Lock,
-  Plus,
   Sparkles,
   Unlock,
   X,

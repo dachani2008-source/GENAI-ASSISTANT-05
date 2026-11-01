@@ -2,11 +2,7 @@ import React, { useState } from 'react';
 import {
   ArrowRight,
   Calendar,
-  CheckCircle2,
   Menu,
-  Sliders,
-  Sparkles,
-  UserCheck,
   Wallet,
   X,
 } from 'lucide-react';

@@ -1,14 +1,5 @@
 import React, { useState } from 'react';
-import {
-  Calendar,
-  CheckCircle2,
-  Clock,
-  MapPin,
-  Plus,
-  Sparkles,
-  Users,
-  Wallet,
-} from 'lucide-react';
+import { Plus } from 'lucide-react';
 import {
   CeremonySlot,
   CommunityOperationItem,

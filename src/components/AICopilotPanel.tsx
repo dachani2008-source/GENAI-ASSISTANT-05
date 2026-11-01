@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Check, Loader2, Send, Sparkles } from 'lucide-react';
+import { Check, Loader2, Send } from 'lucide-react';
 import { EventWorkspace } from '../types/event';
 import { calculateBudgetSummary, recalculateMilestoneDates } from '../utils/planningLogic';
 

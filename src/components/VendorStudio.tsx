@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowUpDown, Check, Plus, Scale, X } from 'lucide-react';
+import { Plus, Scale, X } from 'lucide-react';
 import {
   BookingStatus,
   EventCategory,

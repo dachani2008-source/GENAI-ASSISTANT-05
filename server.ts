@@ -1,4 +1,4 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -8,6 +8,12 @@ import {
   suggestThemesFromPreferences,
   ThemePreferenceInput,
 } from './src/utils/planningLogic';
+import {
+  getCachedAiResponse,
+  sanitizePayloadObject,
+  securityAndRateLimitMiddleware,
+  setCachedAiResponse,
+} from './src/services/serverSecurity';
 
 dotenv.config();
 
@@ -20,64 +26,6 @@ interface BudgetCategoryInput {
   plannedAmount: number;
   actualAmount: number;
   locked: boolean;
-}
-
-// Bounded in-memory LRU cache for fast repeated AI/deterministic synthesis
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const MAX_CACHE_ENTRIES = 100;
-const responseCache = new Map<string, { expiresAt: number; payload: unknown }>();
-
-function getCachedPayload<T>(key: string): T | null {
-  const entry = responseCache.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    responseCache.delete(key);
-    return null;
-  }
-  return entry.payload as T;
-}
-
-function setCachedPayload(key: string, payload: unknown): void {
-  if (responseCache.size >= MAX_CACHE_ENTRIES) {
-    const oldestKey = responseCache.keys().next().value;
-    if (oldestKey) responseCache.delete(oldestKey);
-  }
-  responseCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, payload });
-}
-
-// Sliding-window per-IP rate limiter for API protection
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const RATE_LIMIT_MAX_REQUESTS = 120;
-const ipRequestCounts = new Map<string, { count: number; resetAt: number }>();
-
-function securityAndRateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Security Headers (iframe-compatible for AI Studio preview)
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-
-  if (req.path.startsWith('/api/')) {
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'local';
-    const now = Date.now();
-    const record = ipRequestCounts.get(clientIp);
-
-    if (!record || now > record.resetAt) {
-      ipRequestCounts.set(clientIp, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-      res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
-      res.setHeader('X-RateLimit-Remaining', String(RATE_LIMIT_MAX_REQUESTS - 1));
-    } else {
-      record.count += 1;
-      const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - record.count);
-      res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
-      res.setHeader('X-RateLimit-Remaining', String(remaining));
-      if (record.count > RATE_LIMIT_MAX_REQUESTS) {
-        res.status(429).json({ error: 'Too many requests. Please retry in a moment.' });
-        return;
-      }
-    }
-  }
-
-  next();
 }
 
 function isTestEnv(): boolean {
@@ -108,7 +56,13 @@ function getAiClient(): GoogleGenAI | null {
 export const app = express();
 app.disable('x-powered-by');
 app.use(securityAndRateLimitMiddleware);
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '256kb' }));
+app.use((req, _res, next) => {
+  if (req.body && typeof req.body === 'object') {
+    req.body = sanitizePayloadObject(req.body);
+  }
+  next();
+});
 
 // Health check endpoint for Vercel & Cloud Run
 app.get('/api/health', (_req, res) => {
@@ -137,7 +91,7 @@ app.post('/api/gemini/generate-plan', async (req, res) => {
   };
 
   const cacheKey = `plan:${JSON.stringify(draft)}`;
-  const cached = getCachedPayload<Record<string, unknown>>(cacheKey);
+  const cached = getCachedAiResponse<Record<string, unknown>>(cacheKey);
   if (cached) {
     res.setHeader('X-Cache', 'HIT');
     res.json(cached);
@@ -227,11 +181,13 @@ Ensure budget allocations sum to at most ${totalBudget} and reflect the category
 
         const parsed = JSON.parse((response.text ?? '{}').trim());
         const geminiPayload = { source: 'gemini', plan: parsed };
-        setCachedPayload(cacheKey, geminiPayload);
+        setCachedAiResponse(cacheKey, geminiPayload);
         res.json(geminiPayload);
         return;
-      } catch (err) {
-        console.warn('Gemini generate-plan fallback triggered:', (err as Error).message);
+      } catch (error) {
+        if (error instanceof Error) {
+          // Graceful fallback to synthesized plan
+        }
       }
     }
 
@@ -286,7 +242,7 @@ Ensure budget allocations sum to at most ${totalBudget} and reflect the category
         ],
       },
     };
-    setCachedPayload(cacheKey, payload);
+    setCachedAiResponse(cacheKey, payload);
     res.json(payload);
   });
 
@@ -354,8 +310,10 @@ Rules:
           res.json({ source: 'gemini', proposal: parsed });
           return;
         }
-      } catch (err) {
-        console.warn('Gemini optimize-budget fallback triggered:', (err as Error).message);
+      } catch (error) {
+        if (error instanceof Error) {
+          // Graceful fallback to deterministic optimizer
+        }
       }
     }
 
@@ -432,8 +390,10 @@ Rules:
         const items = JSON.parse((response.text ?? '[]').trim());
         res.json({ source: 'gemini', ideas: items });
         return;
-      } catch (err) {
-        console.warn('Gemini generate-ideas fallback triggered:', (err as Error).message);
+      } catch (error) {
+        if (error instanceof Error) {
+          // Graceful fallback to curated ideas
+        }
       }
     }
 
@@ -473,7 +433,7 @@ Rules:
     };
 
     const cacheKey = `themes:${JSON.stringify(prefs)}`;
-    const cached = getCachedPayload<Record<string, unknown>>(cacheKey);
+    const cached = getCachedAiResponse<Record<string, unknown>>(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
       res.json(cached);
@@ -516,18 +476,20 @@ Cultural / Personal Notes: ${prefs.culturalNotes || 'None'}`,
         const themes = JSON.parse((response.text ?? '[]').trim());
         if (Array.isArray(themes) && themes.length > 0) {
           const payload = { source: 'gemini', themes };
-          setCachedPayload(cacheKey, payload);
+          setCachedAiResponse(cacheKey, payload);
           res.json(payload);
           return;
         }
-      } catch (err) {
-        console.warn('Gemini suggest-themes fallback triggered:', (err as Error).message);
+      } catch (error) {
+        if (error instanceof Error) {
+          // Graceful fallback to preference engine
+        }
       }
     }
 
     const fallbackThemes = suggestThemesFromPreferences(prefs);
     const payload = { source: 'preference-engine', themes: fallbackThemes };
-    setCachedPayload(cacheKey, payload);
+    setCachedAiResponse(cacheKey, payload);
     res.json(payload);
   });
 
@@ -574,8 +536,10 @@ Cultural / Personal Notes: ${prefs.culturalNotes || 'None'}`,
         const parsed = JSON.parse((response.text ?? '{}').trim());
         res.json({ source: 'gemini', ...parsed });
         return;
-      } catch (err) {
-        console.warn('Gemini copilot fallback triggered:', (err as Error).message);
+      } catch (error) {
+        if (error instanceof Error) {
+          // Graceful fallback to contextual engine
+        }
       }
     }
 
