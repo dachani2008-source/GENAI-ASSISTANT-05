@@ -24,19 +24,21 @@ function getAiClient(): GoogleGenAI | null {
   });
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+export const app = express();
+app.use(express.json({ limit: '2mb' }));
 
-  app.use(express.json({ limit: '2mb' }));
+// Health check endpoint for Vercel & Cloud Run
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'ELEGANTIA AI' });
+});
 
-  // 1. Generate Complete Event Plan from 5-Step Wizard
-  app.post('/api/gemini/generate-plan', async (req, res) => {
-    const draft = req.body?.draft;
-    if (!draft || !draft.name) {
-      res.status(400).json({ error: 'Missing event draft parameters.' });
-      return;
-    }
+// 1. Generate Complete Event Plan from 5-Step Wizard
+app.post('/api/gemini/generate-plan', async (req, res) => {
+  const draft = req.body?.draft;
+  if (!draft || !draft.name) {
+    res.status(400).json({ error: 'Missing event draft parameters.' });
+    return;
+  }
 
     const ai = getAiClient();
     const totalBudget = Number(draft.totalBudget) || 25000;
@@ -473,6 +475,9 @@ Rules:
     });
   });
 
+async function startServer() {
+  const PORT = Number(process.env.PORT) || 3000;
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -489,8 +494,13 @@ Rules:
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`FESTIVA AI server running on http://localhost:${PORT}`);
+    console.log(`ELEGANTIA AI server running on http://localhost:${PORT}`);
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
+
